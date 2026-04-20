@@ -1,0 +1,29 @@
+# Dependencies
+TOOL/node_modules/
+
+# Build outputs
+TOOL/dist/
+TOOL/src-tauri/target/
+TOOL/src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference screenshots & media (root level only)
+/*.png
+/*.jpg
+/*.jpeg
+/*.mp4
+/Screenshot_*.png
+/image*.png
+/pulse26.png
+/pluse.mp4
+
+# Env files
+.env
+.env.*
