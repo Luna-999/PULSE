@@ -1300,14 +1300,14 @@ function App() {
       <div className="main-content">
         <div className="main-header" data-tauri-drag-region>
           <span className="header-title">{headerTitles[activeTab] || activeTab}</span>
-          <div className="header-actions">
+          <div className="header-actions" data-tauri-drag-region="false">
             {showConsole && pulseStatus !== 'RUNNING' && (
-              <button className="header-icon-btn" onClick={() => { setShowConsole(false); setActiveTab('Dashboard'); }} title="Close Console">
+              <button className="header-icon-btn" data-tauri-drag-region="false" onClick={() => { setShowConsole(false); setActiveTab('Dashboard'); }} title="Close Console">
                 <X size={14} />
               </button>
             )}
-            <button className="header-icon-btn" onClick={handleMinimize}><Minus size={16} /></button>
-            <button className="header-icon-btn" onClick={handleClose}><X size={16} /></button>
+            <button className="header-icon-btn" data-tauri-drag-region="false" onClick={handleMinimize}><Minus size={16} /></button>
+            <button className="header-icon-btn" data-tauri-drag-region="false" onClick={handleClose}><X size={16} /></button>
           </div>
         </div>
         {renderContent()}
