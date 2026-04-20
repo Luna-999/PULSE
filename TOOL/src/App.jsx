@@ -1243,9 +1243,6 @@ function App() {
   };
 
   const renderContent = () => {
-    if (activeTab === 'Console' || (showConsole && pulseStatus === 'RUNNING')) {
-      return <ConsoleOutput lines={consoleLines} consoleEndRef={consoleEndRef} />;
-    }
     switch (activeTab) {
       case 'Dashboard': return <Dashboard config={config} pulseStatus={pulseStatus} lastResults={lastResults} />;
       case 'General': return <GeneralSettings config={config} onConfigChange={handleConfigChange} />;

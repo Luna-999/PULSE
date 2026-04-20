@@ -92,6 +92,9 @@ fn force_exit() {
 /// Spawn a real external console window that displays the Pulse optimization output.
 /// This creates a genuine, independent OS-level window (cmd.exe running PowerShell)
 /// that the user can move, minimize, and close independently from the main GUI.
+///
+/// The script is written to a temp .ps1 file first to avoid Windows command-line
+/// length limits and special-character escaping issues with inline -Command strings.
 #[tauri::command]
 fn spawn_console_window() -> Result<(), String> {
     let cfg = config::read_config().unwrap_or_default();
@@ -107,15 +110,22 @@ fn spawn_console_window() -> Result<(), String> {
     let game_init_wait = cfg.general.game_init_wait_seconds;
     let reapply_check = cfg.general.reapply_check_seconds;
 
+    // Build game list as individual Write-Host statements for .ps1 file
     let game_list_str = if games.is_empty() {
-        String::from("    (No games configured)")
+        String::from("    Write-Host '    (No games configured)'")
     } else {
         games
             .iter()
-            .map(|g| format!("    - {}", g))
+            .map(|g| format!("    Write-Host '    - {}'", g))
             .collect::<Vec<_>>()
-            .join("`n")
+            .join("\n")
     };
+
+    let game_names_array = games
+        .iter()
+        .map(|g| format!("'{}'", g))
+        .collect::<Vec<_>>()
+        .join(",");
 
     // Build a PowerShell script that mimics the LUMIN PULSE console exactly
     let ps_script = format!(r#"
@@ -351,14 +361,17 @@ while ($true) {{
         game_count = games.len(),
         game_list_str = game_list_str,
         bg_count = bg_count,
-        game_names_array = games
-            .iter()
-            .map(|g| format!("'{}'", g))
-            .collect::<Vec<_>>()
-            .join(","),
+        game_names_array = game_names_array,
     );
 
-    // Spawn an external cmd.exe window running PowerShell with the script
+    // ── Write script to a temp .ps1 file ──────────────────────────
+    // This avoids the Windows command-line length limit (~8191 chars)
+    // and escaping issues that silently break inline -Command strings.
+    let temp_path = std::env::temp_dir().join("pulse_console.ps1");
+    std::fs::write(&temp_path, &ps_script)
+        .map_err(|e| format!("Failed to write temp script: {}", e))?;
+
+    // ── Launch as a real separate visible window ───────────────────
     Command::new("cmd")
         .args([
             "/c",
@@ -367,8 +380,8 @@ while ($true) {{
             "powershell",
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
-            "-Command",
-            &ps_script,
+            "-File",
+            temp_path.to_str().unwrap_or("pulse_console.ps1"),
         ])
         .spawn()
         .map_err(|e| format!("Failed to spawn console window: {}", e))?;
