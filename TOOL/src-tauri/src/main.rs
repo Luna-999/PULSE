@@ -389,6 +389,11 @@ while ($true) {{
     Ok(())
 }
 
+#[tauri::command]
+fn window_minimize(window: tauri::Window) {
+    window.minimize().unwrap_or_else(|e| eprintln!("Failed to minimize: {}", e));
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────
 
 fn main() {
@@ -408,6 +413,7 @@ fn main() {
             is_protected_process,
             force_exit,
             spawn_console_window,
+            window_minimize,
         ])
         .on_window_event(|_window, event| {
             // When the user clicks the native X or the window is being destroyed,

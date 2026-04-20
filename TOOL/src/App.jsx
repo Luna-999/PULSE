@@ -1203,9 +1203,10 @@ function App() {
   // ─── Window Controls (Tauri) ─────────────────────────────────
   const handleMinimize = async () => {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().minimize();
-    } catch { /* browser mode */ }
+      await invoke('window_minimize');
+    } catch (e) { 
+      console.error('Minimize error:', e);
+    }
   };
 
   const handleClose = async () => {
@@ -1213,12 +1214,14 @@ function App() {
       // Force-exit via Rust backend — reverts optimizations and kills the process
       // This guarantees no zombie white-screen window remains
       await invoke('force_exit');
-    } catch {
+    } catch (e) {
+      console.error('Close error on force_exit:', e);
       // Fallback: try Tauri window close API
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().close();
-      } catch {
+      } catch (e2) {
+        console.error('Close error on api/window:', e2);
         // Browser mode — try window.close
         try { window.close(); } catch { /* ignored */ }
       }
