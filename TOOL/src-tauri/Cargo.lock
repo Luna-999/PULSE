@@ -2565,7 +2565,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
- "tauri-plugin-window",
  "windows 0.58.0",
 ]
 
@@ -3580,17 +3579,6 @@ dependencies = [
  "tauri-plugin",
  "thiserror 2.0.18",
  "tokio",
-]
-
-[[package]]
-name = "tauri-plugin-window"
-version = "2.0.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "646c4d192ac58631b56059b5a3b26b254b42dcae91a455a818a22687bb841c39"
-dependencies = [
- "serde",
- "tauri",
- "thiserror 1.0.69",
 ]
 
 [[package]]
