@@ -1019,6 +1019,28 @@ select {
   gap: 8px;
 }
 
+.browse-input-group {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.browse-btn {
+  background-color: #222;
+  color: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.2s;
+}
+
+.browse-btn:hover {
+  background-color: #333;
+}
+
 .modal-field label {
   font-size: 13px;
   color: var(--text-secondary);

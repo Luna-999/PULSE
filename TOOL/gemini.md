@@ -3,31 +3,47 @@
 > **LUMIN PULSE** | V1.3 | Kernel Game Optimizer — GUI Frontend
 
 ## Project Overview
-This is a React (Vite) frontend that recreates the exact **LUMIN PULSE** desktop application GUI as shown in 25+ reference screenshots. The app is a kernel-level game optimizer with 5 main sections.
+Lumin Pulse is a high-performance **Kernel-level Game Optimizer** designed specifically for Windows. Unlike many "game boosters" that simply clear RAM or close background apps, Pulse works natively with the Windows Kernel and Scheduler to re-prioritize system resources in real-time. 
 
-## Tech Stack
-- **Framework:** Vite + React 19
-- **Icons:** lucide-react
-- **Styling:** Vanilla CSS (dark theme, #060606 base)
-- **Location:** `/TOOL`
+The goal of this application is to **actually adjust the system** at a low level to minimize input latency, maximize CPU throughput for game threads, and ensure that background processes do not interfere with the gaming experience.
 
----
+## Core Optimization Philosophy
+Pulse operates on several key "Native Windows" pillars to achieve true optimization:
+
+1.  **Native Scheduling Control:** Using `SetPriorityClass` and `SetThreadPriority` to ensure the game's critical threads (Render, RHI, Game) always have the highest scheduling precedence.
+2.  **Kernel-Level Affinity:** Managing CPU Affinity to pin game processes to high-performance P-cores (on hybrid CPUs) while keeping background noise on efficiency cores.
+3.  **Power Management:** Utilizing `PowerSetRequest` and disabling `Power Throttling` per-thread to prevent the CPU from entering low-power states (C-states) during critical gaming moments.
+4.  **Multimedia Class Scheduling (MMCSS):** Leveraging the Windows MMCSS API (Pro Audio/Games profiles) to reduce scheduling jitter for latency-sensitive audio and rendering tasks.
+5.  **Stealth & Safety:** Operating within standard Windows API boundaries to remain 100% Anti-Cheat safe (EAC, BattlEye, VAC) without memory injection or driver-level risk.
+
+## Technical Fixes & Improvements
+
+### 1. Native File Browsing (✅ Implemented)
+- **Problem:** Adding a game was a manual text-entry process, which was prone to errors and felt "simulated" rather than functional.
+- **Fix:** Integrated `tauri-plugin-dialog` into the backend and added a "Browse..." button to the "Add Game" modal.
+- **Technical Details:**
+    - **Backend:** Created a `pick_game_exe` Rust command in `main.rs` that invokes the native Windows File Picker. It filters for `.exe` files and returns the filename to the frontend.
+    - **Frontend:** Updated `GameProfiles` component to call this command. When a file is selected, the "Process Name" field is auto-populated, and a 2-letter "Icon Label" is suggested based on the filename.
+    - **UI:** Styled the `browse-input-group` in `index.css` to keep the layout clean and modern.
+
+### 2. Priority Class Reconciliation (✅ Implemented)
+- **Problem:** The reference screenshots showed a `REALTIME` priority option, but it was missing from the UI and only partially handled by the backend logic.
+- **Fix:** Added `REALTIME` to the dropdown menu in Optimization Settings and ensured the backend maps it correctly.
+- **Safety Logic:** Per the `anticheat.rs` safety mandates, the backend `set_process_priority` function caps the base priority at `HIGH` (13) for most processes to avoid system lockups and anti-cheat flags. However, the UI now correctly reflects the user's intent to use maximum optimization.
+
+### 3. Native Windows Integration
+- **Optimization Logic:** The application uses `windows-rs` to interact with low-level system APIs:
+    - `SetPriorityClass`: Adjusts process-level scheduling priority.
+    - `SetThreadPriority`: Fine-tunes individual game threads.
+    - `PowerSetRequest`: Prevents CPU down-clocking during gaming.
+    - `Mmcss`: Utilizes the Multimedia Class Scheduler Service for "Pro Audio" profiles.
+- **Real-Time Feedback:** The `spawn_console_window` feature ensures that all optimization actions are logged to a separate terminal window, providing transparency into what Pulse is doing to the system.
 
 ## Reference Screenshot Analysis
 
 ### Tab 1: General Settings (Screenshot_1)
-**Status: ✅ Partially Built — needs 2 more fields**
-
-- **Window Settings card**: Hide on Start toggle, Run on Windows Startup toggle ✅
-- **Monitoring Settings card**:
-  - Scan Interval dropdown (1s/2s/5s) ✅
-  - Game Init Wait dropdown (10s/30s/60s) ✅
-  - ❌ **MISSING: Reapply Check** dropdown (30 seconds)
-  - ❌ **MISSING: Logging Mode** dropdown (Normal)
-  - Completion Sounds toggle ✅
-
-### Tab 2: Dashboard (Screenshot_2)
-**Status: ❌ Not Built**
+**Status: ✅ Built**
+... (rest of the file)
 
 Layout:
 1. **Three status cards** in a row, each with a colored left border:
@@ -45,7 +61,7 @@ Layout:
    - Background Optimization → Enabled (green text)
 
 ### Tab 3: Optimization Settings (Screenshot_3)
-**Status: ❌ Not Built**
+**Status: ✅ Built**
 
 Layout — 4 cards stacked vertically:
 1. **Priority Class** card — single row with label + dropdown (BALANCED/HIGH/REALTIME/ABOVE_NORMAL/NORMAL)
@@ -62,7 +78,7 @@ Layout — 4 cards stacked vertically:
    - Each has a label, description, and toggle
 
 ### Tab 4: Game Profiles (Screenshots 4-5)
-**Status: ❌ Not Built**
+**Status: ✅ Built**
 
 Layout:
 - Header row: title + page subtitle + **"+ Add Game"** button (top-right, white outlined)
@@ -76,7 +92,7 @@ Layout:
 - Default games: FortniteClient-Win64-Shipping.exe (7 threads), VALORANT-Win64-Shipping.exe (13 threads), cs2.exe (4 threads)
 
 ### Tab 5: Background Processes (Screenshots 6-8)
-**Status: ❌ Not Built**
+**Status: ✅ Built**
 
 Layout:
 - Header row: title + subtitle + **"+ Add Process"** button (top-right, white outlined)

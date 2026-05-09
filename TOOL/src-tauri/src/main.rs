@@ -80,6 +80,32 @@ fn is_protected_process(name: String) -> bool {
     anticheat::is_protected(&name)
 }
 
+/// Open a native Windows file dialog to pick an .exe file.
+/// Returns the filename (e.g., "Game.exe") so it can be added to the profile.
+#[tauri::command]
+async fn pick_game_exe(window: tauri::Window) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    
+    let file_path = window.dialog()
+        .file_picker()
+        .add_filter("Executable", &["exe"])
+        .set_title("Select Game Executable")
+        .pick_file()
+        .await;
+
+    match file_path {
+        Some(path) => {
+            // We want just the filename for the process monitoring logic
+            let path_buf = std::path::PathBuf::from(path.to_string());
+            let filename = path_buf.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string());
+            Ok(filename)
+        },
+        None => Ok(None),
+    }
+}
+
 /// Force-exit the entire application process.
 /// Called from the frontend close button to guarantee the .exe terminates.
 #[tauri::command]
@@ -399,6 +425,7 @@ fn window_minimize(window: tauri::Window) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             is_running: Mutex::new(false),
         })
@@ -411,6 +438,7 @@ fn main() {
             stop_optimization_session,
             get_pulse_status,
             is_protected_process,
+            pick_game_exe,
             force_exit,
             spawn_console_window,
             window_minimize,

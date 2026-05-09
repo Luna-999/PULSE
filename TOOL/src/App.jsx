@@ -467,6 +467,7 @@ const OptimizationSettings = ({ config, onConfigChange }) => {
             <option value="ABOVE_NORMAL">ABOVE_NORMAL</option>
             <option value="BALANCED">BALANCED</option>
             <option value="HIGH">HIGH</option>
+            <option value="REALTIME">REALTIME</option>
           </select>
         </div>
       </div>
@@ -515,6 +516,22 @@ const GameProfiles = ({ config, onConfigChange, addToast }) => {
   const [newThread, setNewThread] = useState({ name: '', priority: 0, affinity: 'ALL', disableBoost: false });
 
   const toggleExpand = (id) => setExpandedId(expandedId === id ? null : id);
+
+  const handleBrowse = async () => {
+    try {
+      const fileName = await invoke('pick_game_exe');
+      if (fileName) {
+        setNewGame(prev => ({
+          ...prev,
+          name: fileName,
+          icon: fileName.substring(0, 2).toUpperCase()
+        }));
+      }
+    } catch (e) {
+      console.error('Browse error:', e);
+      addToast('Failed to open file dialog', 'error');
+    }
+  };
 
   const addGame = () => {
     if (!newGame.name.trim()) {
@@ -625,7 +642,10 @@ const GameProfiles = ({ config, onConfigChange, addToast }) => {
           <div className="modal-form">
             <div className="modal-field">
               <label>Process Name (e.g., GameName.exe)</label>
-              <input type="text" className="profile-input full-width" placeholder="GameName-Win64-Shipping.exe" value={newGame.name} onChange={(e) => setNewGame({ ...newGame, name: e.target.value })} />
+              <div className="browse-input-group">
+                <input type="text" className="profile-input" style={{ flex: 1 }} placeholder="GameName-Win64-Shipping.exe" value={newGame.name} onChange={(e) => setNewGame({ ...newGame, name: e.target.value })} />
+                <button className="browse-btn" onClick={handleBrowse}>Browse...</button>
+              </div>
             </div>
             <div className="modal-field-row">
               <div className="modal-field">
