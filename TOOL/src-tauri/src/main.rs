@@ -7,7 +7,10 @@ mod scanner;
 
 use std::sync::Mutex;
 use std::process::Command;
-use tauri::{State, WindowEvent};
+use tauri::{AppHandle, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::UpdaterExt;
+use std::time::Duration;
 
 /// Application state shared across commands
 struct AppState {
@@ -16,87 +19,72 @@ struct AppState {
 
 // ─── Tauri Commands ───────────────────────────────────────────────
 
-/// Get all running processes on the system
 #[tauri::command]
 fn get_running_processes() -> Vec<scanner::ProcessInfo> {
     scanner::get_running_processes()
 }
 
-/// Get threads for a specific process
 #[tauri::command]
 fn get_process_threads(pid: u32) -> Vec<scanner::ThreadInfo> {
     scanner::get_threads_for_process(pid)
 }
 
-/// Read the saved config (or create default)
 #[tauri::command]
 fn read_config() -> Result<config::AppConfig, String> {
     config::read_config()
 }
 
-/// Write config to disk
 #[tauri::command]
 fn write_config(config: config::AppConfig) -> Result<(), String> {
     config::write_config(&config)
 }
 
-/// Start the optimization session — applies all profiles to matching running processes
 #[tauri::command]
 fn start_optimization_session(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<optimizer::OptimizationResult>, String> {
     let cfg = config::read_config()?;
-
-    // Mark as running
     {
         let mut running = state.is_running.lock().map_err(|e| e.to_string())?;
         *running = true;
     }
-
-    let results = optimizer::apply_all(&cfg);
+    let results = optimizer::apply_all(&app, &cfg);
     Ok(results)
 }
 
-/// Stop the optimization session — reverts all process changes to original state
 #[tauri::command]
-fn stop_optimization_session(state: State<'_, AppState>) -> Result<Vec<optimizer::OptimizationResult>, String> {
+fn stop_optimization_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<optimizer::OptimizationResult>, String> {
     let mut running = state.is_running.lock().map_err(|e| e.to_string())?;
     *running = false;
-
-    // Actually revert all modified processes
-    let results = optimizer::revert_all();
+    let results = optimizer::revert_all(Some(&app));
     Ok(results)
 }
 
-/// Check if Pulse is currently running
 #[tauri::command]
 fn get_pulse_status(state: State<'_, AppState>) -> bool {
     *state.is_running.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Check if a process name is on the anti-cheat exclusion list
 #[tauri::command]
 fn is_protected_process(name: String) -> bool {
     anticheat::is_protected(&name)
 }
 
-/// Open a native Windows file dialog to pick an .exe file.
-/// Returns the filename (e.g., "Game.exe") so it can be added to the profile.
 #[tauri::command]
 async fn pick_game_exe(window: tauri::Window) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    
     let file_path = window.dialog()
-        .file_picker()
+        .file()
         .add_filter("Executable", &["exe"])
         .set_title("Select Game Executable")
-        .pick_file()
-        .await;
+        .blocking_pick_file();
 
     match file_path {
         Some(path) => {
-            // We want just the filename for the process monitoring logic
-            let path_buf = std::path::PathBuf::from(path.to_string());
+            let path_buf = path.into_path().map_err(|_| "Failed to convert path".to_string())?;
             let filename = path_buf.file_name()
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string());
@@ -106,303 +94,44 @@ async fn pick_game_exe(window: tauri::Window) -> Result<Option<String>, String> 
     }
 }
 
-/// Force-exit the entire application process.
-/// Called from the frontend close button to guarantee the .exe terminates.
 #[tauri::command]
-fn force_exit() {
-    // Revert any active optimizations before dying
-    let _ = optimizer::revert_all();
+fn force_exit(app: AppHandle) {
+    let _ = optimizer::revert_all(Some(&app));
     std::process::exit(0);
 }
 
-/// Spawn a real external console window that displays the Pulse optimization output.
-/// This creates a genuine, independent OS-level window (cmd.exe running PowerShell)
-/// that the user can move, minimize, and close independently from the main GUI.
-///
-/// The script is written to a temp .ps1 file first to avoid Windows command-line
-/// length limits and special-character escaping issues with inline -Command strings.
 #[tauri::command]
 fn spawn_console_window() -> Result<(), String> {
-    let cfg = config::read_config().unwrap_or_default();
-    let optimization = &cfg.optimization;
-    let games: Vec<String> = cfg
-        .game_profiles
-        .iter()
-        .filter(|g| g.enabled)
-        .map(|g| g.name.clone())
-        .collect();
-    let bg_count = cfg.background_processes.len();
-    let scan_interval = cfg.general.scan_interval_seconds;
-    let game_init_wait = cfg.general.game_init_wait_seconds;
-    let reapply_check = cfg.general.reapply_check_seconds;
-
-    // Build game list as individual Write-Host statements for .ps1 file
-    let game_list_str = if games.is_empty() {
-        String::from("    Write-Host '    (No games configured)'")
-    } else {
-        games
-            .iter()
-            .map(|g| format!("    Write-Host '    - {}'", g))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let game_names_array = games
-        .iter()
-        .map(|g| format!("'{}'", g))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    // Build a PowerShell script that mimics the LUMIN PULSE console exactly
+    let log_path = std::env::temp_dir().join("pulse_log.txt");
+    
     let ps_script = format!(r#"
 $Host.UI.RawUI.BackgroundColor = 'Black'
 $Host.UI.RawUI.ForegroundColor = 'Gray'
-try {{ $Host.UI.RawUI.WindowTitle = 'C:\Program Files\Lumin Pulse\LUMIN_PULSE.exe' }} catch {{}}
+try {{ $Host.UI.RawUI.WindowTitle = 'Lumin Pulse Kernel Optimizer Console' }} catch {{}}
 Clear-Host
 
-function Write-C($text, $color) {{ Write-Host $text -ForegroundColor $color }}
-function TS {{ (Get-Date).ToString('HH:mm:ss') }}
+Write-Host "Initializing Lumin Pulse IPC Bridge..." -ForegroundColor Magenta
+Start-Sleep -Seconds 1
+Write-Host "Connected to core engine. Tailing log file: {log_path}" -ForegroundColor Green
+Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray
 
-# ASCII Banner
-Write-C '::::::::  :::    ::: :::     :::::::::: :::::::::'  Magenta
-Write-C ':+:       :+:   :+:  :+: :+:   :+:        :+:'      Magenta
-Write-C '+=+       +:+  +:+   +:+ +:+    +:+        +:+'      Magenta
-Write-C '+##+:++#++ #+#  +#+ +#+     +#++:+:+#++ +#++:++#+'  Magenta
-Write-C '#+#        #+#  +#+ +#+             +#+ +#+   #+#'   Magenta
-Write-C '#+#        #+#  #+# #+# #+#        #+   #+    #+'    Magenta
-Write-C '###        ########  ######### ######## #########'   Magenta
-Write-Host ''
-Write-Host '---------------------------------------------------' -ForegroundColor DarkGray
-Write-C '[ LUMIN PULSE ] | V1.3 | KERNEL GAME OPTIMIZER' White
-Write-Host '---------------------------------------------------' -ForegroundColor DarkGray
-Write-Host ''
-Write-C "Logging level: Normal (standard output)" Green
-Write-Host ''
-Write-C '[ CONFIGURATION SUMMARY ]' Yellow
-Write-Host '---------------------------------------------------' -ForegroundColor DarkGray
-Write-C 'Monitoring:' White
-Write-Host "  Scan Interval:     {scan_interval}s"
-Write-Host "  Game Init Wait:    {game_init_wait}s"
-Write-Host "  Reapply Check:     {reapply_check}s"
-Write-C 'Optimizations:' White
-Write-Host "  Priority Class:    {priority_class}"
-Write-Host "  Smart Affinity:    {smart_affinity}"
-Write-Host "  DWM Optimization:  {dwm_opt}"
-Write-Host "  Background Apps:   {bg_apps}"
-Write-Host 'Detected Games ({game_count}):'
-{game_list_str}
-Write-Host '---------------------------------------------------' -ForegroundColor DarkGray
-Start-Sleep -Milliseconds 600
-
-# Authentication
-Write-Host ''
-Write-C "[ PULSE ] | $(TS) | AUTHENTICATION :: Initializing Pulse Authentication..." Magenta
-Write-C "[ PULSE ] | $(TS) | AUTHENTICATION :: Contacting authorization server..." Magenta
-Start-Sleep -Milliseconds 800
-Write-Host ''
-Write-C "[ PULSE ] | $(TS) | AUTHENTICATION :: Verified Successfully" Green
-Start-Sleep -Milliseconds 300
-Write-Host ''
-Write-C "[ PULSE ] | $(TS) | Pulse authorization verified. Initializing optimizer..." Yellow
-Start-Sleep -Milliseconds 500
-
-# Privileges
-Write-Host ''
-Write-C "[ PULSE ] | $(TS) | Checking administrator privileges..." Magenta
-Write-C "[ PULSE ] | $(TS) | Enabling Debug and Priority privileges..." Magenta
-Start-Sleep -Milliseconds 400
-Write-C "[ PULSE ] | $(TS) | Privilege escalation complete." Green
-Write-C "[ PULSE ] | $(TS) | Registering with MMCSS 'Games' profile..." Magenta
-Start-Sleep -Milliseconds 300
-Write-C "[ PULSE ] | $(TS) | MMCSS registration complete." Green
-Start-Sleep -Milliseconds 500
-
-# Main Loop
-while ($true) {{
-    Write-Host ''
-    Write-Host '========================================' -ForegroundColor DarkGray
-    Write-C "[ PULSE ] | $(TS) | STANDBY :: Waiting for supported game to start..." White
-    Write-Host '========================================' -ForegroundColor DarkGray
-    Write-C 'Active Game Database:' Green
-{game_list_str}
-    Write-Host ''
-    Write-Host "[ PULSE ] | $(TS) | SCANNING :: Monitoring for supported game processes..." -ForegroundColor DarkGray
-
-    # Scan for game processes
-    $detected = $null
-    $detectedPid = 0
-    $gameNames = @({game_names_array})
-
-    while (-not $detected) {{
-        foreach ($gn in $gameNames) {{
-            $proc = Get-Process -Name ($gn -replace '\.exe$','') -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($proc) {{
-                $detected = $gn
-                $detectedPid = $proc.Id
-                break
-            }}
-        }}
-        if (-not $detected) {{ Start-Sleep -Seconds {scan_interval} }}
-    }}
-
-    # Game Detected
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | DETECTION :: Game process found: $detected" Yellow
-    Start-Sleep -Milliseconds 400
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | STANDBY :: Waiting for game initialization..." White
-
-    for ($i = {game_init_wait}; $i -ge 0; $i--) {{
-        Write-Host "  Optimization will begin in $i seconds..."
-        Start-Sleep -Seconds 1
-    }}
-
-    Write-C "[ PULSE ] | $(TS) | INITIATING :: Starting optimization sequence..." Green
-    Start-Sleep -Milliseconds 500
-
-    # Kernel Optimization
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | KERNEL :: STEALTH OPTIMIZATION SEQUENCE INITIATED" Yellow
-    Write-C "[ PULSE ] | $(TS) | TARGET :: $detected (PID: $detectedPid)" Magenta
-    Start-Sleep -Milliseconds 300
-
-    $cores = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
-    Write-Host "[*] Standard CPU detected (no E/P-core split)"
-    Write-Host "    Total cores: $cores"
-    Start-Sleep -Milliseconds 200
-
-    Write-Host '[*] Applying CPU Core Partitioning (CPU Sets)...'
-    Start-Sleep -Milliseconds 400
-    Write-C '[V9.0] Applied Process-wide CPU Sets (via ID mapping)' Green
-    Write-Host '[*] Profiling game threads to identify performance-critical paths...'
-    Start-Sleep -Milliseconds 300
-
-    try {{
-        $threadCount = (Get-Process -Id $detectedPid -ErrorAction SilentlyContinue).Threads.Count
-    }} catch {{ $threadCount = 0 }}
-    if (-not $threadCount) {{ $threadCount = 120 }}
-
-    Write-Host ''
-    Write-C '[+] Disabled process priority boost (stable scheduling)' Green
-    Write-C '[V10.0] Power Request active - CPU sleep states disabled' Green
-    Start-Sleep -Milliseconds 400
-
-    # Background Process Optimization
-    Write-Host ''
-    Write-C '[*] Background Process Optimization:' White
-    Write-Host '[*] Scanning for background processes to deprioritize...'
-    Write-Host "[*] Standard CPU detected (no E/P-core split)"
-    Write-Host "    Total cores: $cores"
-    Start-Sleep -Milliseconds 300
-    Write-C "[+] Deprioritized {bg_count} background processes" Green
-    Start-Sleep -Milliseconds 200
-
-    Write-Host ''
-    Write-Host "[*] Found $threadCount threads in process"
-    Write-Host '[*] CPU affinity optimization disabled (OS-managed)'
-    Start-Sleep -Milliseconds 300
-
-    Write-Host ''
-    Write-C '[*] Optimization Summary:' White
-    Write-Host "    Priority adjusted: $($threadCount - 2)/$threadCount"
-    Write-Host "    Power throttling disabled: $threadCount/$threadCount"
-    Write-Host "    Ideal processor set: $threadCount/$threadCount"
-    Start-Sleep -Milliseconds 300
-
-    Write-Host ''
-    Write-C '[*] V5.0 Optimization Summary:' White
-    Write-Host "    Ideal processor: $threadCount/$threadCount (cache locality)"
-    Write-Host "    Priority boost disabled: $($threadCount + 2)/$threadCount (stable scheduling)"
-    Write-C "[ PULSE ] | $(TS) | [+] Memory Priority set to 5 (Maximum)" Green
-    Write-C "[ PULSE ] | $(TS) | [+] Hard Working Set locking enabled (512MB Scale)" Green
-    Start-Sleep -Milliseconds 400
-
-    Write-Host ''
-    Write-C '  SCANNING THREADS [ COMPLETE ]' Green
-    Start-Sleep -Milliseconds 300
-
-    # DWM + Background
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | KERNEL :: Optimizing Desktop Window Manager..." Magenta
-    Start-Sleep -Milliseconds 400
-    Write-C "[ PULSE ] | $(TS) | COMPLETE :: DWM optimization applied." Green
-    Start-Sleep -Milliseconds 300
-
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | Starting background process optimization..." Magenta
-    Start-Sleep -Milliseconds 600
-
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | OPTIMIZATION RESULTS :: Background Apps Contained" Yellow
-    Write-Host "  Processes Throttled:    {bg_count}/{bg_count}"
-    Write-Host "  RAM Purged:             {bg_count}"
-    Write-Host "  CPU Affinity Locked:    {bg_count} (E-Cores)"
-    Write-Host '  Page Priority Lowered:  0'
-    Write-Host "  Power Throttled:        {bg_count}"
-    Start-Sleep -Milliseconds 400
-
-    # ALL ACTIVE
-    Write-Host ''
-    Write-Host "[ PULSE ] | $(TS) | ========================================" -ForegroundColor DarkGray
-    Write-C "[ PULSE ] | $(TS) |     ALL OPTIMIZATIONS ACTIVE" Green
-    Write-Host "[ PULSE ] | $(TS) | ========================================" -ForegroundColor DarkGray
-    Write-C "[ PULSE ] | $(TS) | MONITORING :: Continuous monitoring initiated..." Magenta
-
-    # Monitor loop — wait for game to close
-    while ($true) {{
-        Start-Sleep -Seconds {reapply_check}
-        $still = Get-Process -Name ($detected -replace '\.exe$','') -ErrorAction SilentlyContinue
-        if (-not $still) {{ break }}
-    }}
-
-    # Game Closed
-    Write-Host ''
-    Write-Host '========================================' -ForegroundColor DarkGray
-    Write-C "[ PULSE ] | $(TS) | DETECTION :: Game Closed" Yellow
-    Write-Host '========================================' -ForegroundColor DarkGray
-    Start-Sleep -Milliseconds 300
-
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | REVERTING :: Restoring system to standard state..." Magenta
-    Write-C "[ PULSE ] | $(TS) | REVERTING :: Restoring background applications..." Magenta
-    Start-Sleep -Milliseconds 400
-    Write-C "[ PULSE ] | $(TS) | COMPLETE :: Restored {bg_count} processes (CPU, Memory, Affinity, Power)" Green
-    Write-C "[ PULSE ] | $(TS) | REVERTING :: Restoring Desktop Window Manager to defaults..." Magenta
-    Start-Sleep -Milliseconds 300
-    Write-C "[ PULSE ] | $(TS) | COMPLETE :: Restored 2 DWM thread(s) to default settings" Green
-    Start-Sleep -Milliseconds 300
-
-    Write-Host ''
-    Write-C "[ PULSE ] | $(TS) | STANDBY :: System returned to idle. Waiting for next session..." Yellow
-    Start-Sleep -Seconds 1
+if (Test-Path "{log_path}") {{
+    Get-Content -Path "{log_path}" -Wait -Tail 10
+}} else {{
+    Write-Host "Waiting for log file to be created..." -ForegroundColor Yellow
+    while (-not (Test-Path "{log_path}")) {{ Start-Sleep -Seconds 1 }}
+    Get-Content -Path "{log_path}" -Wait
 }}
-"#,
-        scan_interval = scan_interval,
-        game_init_wait = game_init_wait,
-        reapply_check = reapply_check,
-        priority_class = optimization.priority_class,
-        smart_affinity = if optimization.smart_affinity { "ENABLED" } else { "DISABLED" },
-        dwm_opt = if optimization.dwm_optimization { "ENABLED" } else { "DISABLED" },
-        bg_apps = if optimization.background_apps { "THROTTLED" } else { "DISABLED" },
-        game_count = games.len(),
-        game_list_str = game_list_str,
-        bg_count = bg_count,
-        game_names_array = game_names_array,
-    );
+"#, log_path = log_path.to_string_lossy());
 
-    // ── Write script to a temp .ps1 file ──────────────────────────
-    // This avoids the Windows command-line length limit (~8191 chars)
-    // and escaping issues that silently break inline -Command strings.
     let temp_path = std::env::temp_dir().join("pulse_console.ps1");
     std::fs::write(&temp_path, &ps_script)
         .map_err(|e| format!("Failed to write temp script: {}", e))?;
 
-    // ── Launch as a real separate visible window ───────────────────
     Command::new("cmd")
         .args([
             "/c",
             "start",
-            "C:\\Program Files\\Lumin Pulse\\LUMIN_PULSE.exe",
             "powershell",
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
@@ -417,7 +146,37 @@ while ($true) {{
 
 #[tauri::command]
 fn window_minimize(window: tauri::Window) {
-    window.minimize().unwrap_or_else(|e| eprintln!("Failed to minimize: {}", e));
+    let _ = window.minimize();
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<(), String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let path = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    let (key, _) = hkcu.create_subkey(path).map_err(|e| e.to_string())?;
+
+    if enabled {
+        let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        key.set_value("LuminPulse", &current_exe.to_str().unwrap_or_default()).map_err(|e| e.to_string())?;
+    } else {
+        let _ = key.delete_value("LuminPulse");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn validate_license(key: String) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+    let res = client.post("https://lumintweaks.com/api/validate")
+        .json(&serde_json::json!({ "key": key }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(res.status().is_success())
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────
@@ -426,6 +185,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             is_running: Mutex::new(false),
         })
@@ -442,13 +202,48 @@ fn main() {
             force_exit,
             spawn_console_window,
             window_minimize,
+            set_autostart,
+            validate_license,
         ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            
+            // Check for updates on startup
+            let handle_clone = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(updater) = handle_clone.updater() {
+                   if let Ok(Some(update)) = updater.check().await {
+                       println!("Update available: {}", update.version);
+                   }
+                }
+            });
+
+            // Phase 3: Background detection loop
+            std::thread::spawn(move || {
+                loop {
+                    let cfg = match config::read_config() {
+                        Ok(c) => c,
+                        Err(_) => {
+                            std::thread::sleep(Duration::from_secs(5));
+                            continue;
+                        }
+                    };
+
+                    let running = scanner::get_running_processes();
+                    for profile in &cfg.game_profiles {
+                        if !profile.enabled { continue; }
+                        if let Some(proc) = running.iter().find(|p| p.name.eq_ignore_ascii_case(&profile.name)) {
+                            let _ = optimizer::apply_game_profile(&handle, proc, profile);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(cfg.general.scan_interval_seconds as u64));
+                }
+            });
+
+            Ok(())
+        })
         .on_window_event(|_window, event| {
-            // When the user clicks the native X or the window is being destroyed,
-            // revert all optimizations and hard-kill the process so no zombie
-            // white-screen remains.
             if let WindowEvent::Destroyed = event {
-                let _ = optimizer::revert_all();
                 std::process::exit(0);
             }
         })
